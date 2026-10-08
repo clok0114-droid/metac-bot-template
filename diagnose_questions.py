@@ -1,8 +1,12 @@
-"""aggregations.recency_weighted の history から CP を読む経路を確定させる。
+"""CP が読めない原因を、ライブラリ側か呼び方かで確定させる。
 
-直前の診断で latest が None、history は存在と分かった。ライブラリは latest を
-読もうとして空振りしている。history の最後の要素の形を見て、どのキーを使えば
-二値問題のコミュニティ予測になるかを確定させる。
+ライブラリは検索時に with_cp=true を渡している（_create_url_params_for_search）。
+前回の生API診断はそれを付けていなかったので、latest=None は当然だった。
+ここでは同じ問題に対して
+  (1) ライブラリ経由の値
+  (2) 詳細エンドポイント + with_cp=true
+を並べ、どちらで値が出るかを見る。(2) で出るなら、問題ごとに詳細を引いて
+埋め直せばよく、Benchmarker はそのまま使える。
 
 LLM は呼ばない。費用0。
 """
@@ -25,6 +29,24 @@ from forecasting_tools.helpers.metaculus_client import ApiFilter, MetaculusClien
 logger = logging.getLogger(__name__)
 
 
+def _probe(pid: int, headers: dict, params: dict) -> str:
+    r = requests.get(f"https://www.metaculus.com/api/posts/{pid}/",
+                     headers=headers, params=params, timeout=40)
+    if r.status_code != 200:
+        return f"HTTP {r.status_code}"
+    agg = ((r.json().get("question") or {}).get("aggregations") or {})
+    rw = agg.get("recency_weighted")
+    if not isinstance(rw, dict):
+        return "recency_weighted 無し"
+    latest, hist = rw.get("latest"), rw.get("history")
+    if isinstance(latest, dict) and latest.get("centers"):
+        return f"latest.centers={json.dumps(latest['centers'])[:30]}"
+    if isinstance(hist, list) and hist and isinstance(hist[-1], dict):
+        return (f"latest=None / history[{len(hist)}][-1].centers="
+                f"{json.dumps(hist[-1].get('centers'))[:30]}")
+    return f"latest={type(latest).__name__} history={type(hist).__name__}"
+
+
 async def main() -> None:
     client = MetaculusClient()
     questions = await client.get_questions_matching_filter(
@@ -39,35 +61,17 @@ async def main() -> None:
         error_if_question_target_missed=False,
     )
     headers = {"Authorization": f"Token {os.environ['METACULUS_TOKEN']}"}
+    print("=" * 78)
     for q in questions:
         pid = getattr(q, "id_of_post", None) or getattr(q, "post_id", None)
-        r = requests.get(f"https://www.metaculus.com/api/posts/{pid}/",
-                         headers=headers, timeout=40)
-        if r.status_code != 200:
-            print(f"post {pid}: HTTP {r.status_code}")
-            continue
-        agg = ((r.json().get("question") or {}).get("aggregations") or {})
-        print("=" * 76)
-        print(f"post_id={pid}  {str(getattr(q, 'question_text', ''))[:52]}")
-        for name in ("recency_weighted", "metaculus_prediction"):
-            body = agg.get(name)
-            if not isinstance(body, dict):
-                print(f"  [{name}] 無し")
-                continue
-            hist = body.get("history")
-            print(f"  [{name}] latest={type(body.get('latest')).__name__} "
-                  f"history={type(hist).__name__} "
-                  f"len={len(hist) if isinstance(hist, list) else 'n/a'}")
-            if isinstance(hist, list) and hist:
-                last = hist[-1]
-                if isinstance(last, dict):
-                    print(f"    history[-1] のキー: {sorted(last.keys())}")
-                    for k in ("centers", "means", "medians", "forecast_values",
-                              "forecaster_count", "end_time"):
-                        if k in last:
-                            print(f"      {k} = {json.dumps(last[k])[:76]}")
-                else:
-                    print(f"    history[-1] の型: {type(last).__name__}")
+        lib = getattr(q, "community_prediction_at_access_time", None)
+        print(f"post {pid}  {str(getattr(q, 'question_text', ''))[:44]}")
+        print(f"  (1) ライブラリ経由        : {lib}")
+        print(f"  (2) with_cp なしの詳細    : {_probe(pid, headers, {})}")
+        print(f"  (3) with_cp=true の詳細   : {_probe(pid, headers, {'with_cp': 'true'})}")
+    print("=" * 78)
+    print("(3) で値が出れば、問題ごとに詳細を引いて埋め直す方針で確定。")
+    print("=" * 78)
 
 
 if __name__ == "__main__":
