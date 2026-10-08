@@ -77,10 +77,44 @@ async def main() -> None:
     check_environment(strict=True)
 
     num_questions = int(os.environ.get("BENCHMARK_QUESTIONS", "100"))
-    questions = MetaculusClient().get_benchmark_questions(num_questions)
+    fetch_only = os.environ.get("BENCHMARK_FETCH_ONLY", "") not in ("", "0", "false")
+
+    # 既定の get_benchmark_questions は、サーバー側で200件該当すると見積もった
+    # まま、ローカルの絞り込み（コミュニティ予測の存在・bot を含まない集計・
+    # 予測者30人以上）で0件になって例外を投げる。条件を緩め、足りなくても
+    # 例外にせず「何件取れたか」を見てから進む形にする。
+    questions = MetaculusClient().get_benchmark_questions(
+        num_questions,
+        num_forecasters_gte=10,
+        max_days_since_opening=None,
+        error_if_question_target_missed=False,
+    )
+    logger.info(f"Retrieved {len(questions)} usable questions (asked for {num_questions})")
+
+    if not questions:
+        print("=" * 72)
+        print("使える問題が0件だった。LLM は1回も呼んでいない（費用0）。")
+        print("コミュニティ予測が公開されている open な二択問題が、いま条件を")
+        print("満たしていない。num_forecasters_gte をさらに下げるか、時期を変える。")
+        print("=" * 72)
+        return
+
+    MIN_FOR_SIGNAL = 60
+    if len(questions) < MIN_FOR_SIGNAL:
+        print("=" * 72)
+        print(f"警告: 取得できたのは {len(questions)} 問で、{MIN_FOR_SIGNAL} 問を下回る。")
+        print("Benchmarker の注意書き（100問でも劣る側が約30%勝つ）に照らすと、")
+        print("この本数の順位は結論に使えない。動作確認としてのみ扱うこと。")
+        print("=" * 72)
+
+    if fetch_only:
+        print("=" * 72)
+        print(f"取得のみのモード。{len(questions)} 問を取得して終了。費用0。")
+        print("=" * 72)
+        return
+
     for question in questions:
         question.background_info = None
-    logger.info(f"Benchmarking on {len(questions)} questions")
 
     bots = [_build(WithDisconfirmation), _build(WithoutDisconfirmation)]
 
