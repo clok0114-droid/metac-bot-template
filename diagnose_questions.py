@@ -1,11 +1,12 @@
-"""ベンチマーク用の問題が0件になる原因を切り分ける。
+"""取得した問題に、採点基準となるコミュニティ予測が実際に入っているかを見る。
 
-get_benchmark_questions は、サーバー側で1,200件該当すると見積もったうえで
-ローカルの絞り込みで0件にして落ちる。サーバーとローカルでこれだけ食い違う
-のは「条件を満たす問題が無い」より「ローカル側の判定が現在のAPIの形と
-噛み合っていない」を疑うべき差。どの条件が効いているかを1回で出す。
+community_prediction_exists=True が1,200件を0件にする原因になっている。
+判定は question.community_prediction_at_access_time is not None を見るだけ
+なので、値が本当に無いのか、パーサが現在のAPIの形から読めていないのかを
+区別する必要がある。Benchmarker はこの値を採点基準に使うので、ここが埋まって
+いなければ CP 基準の A/B は成立しない。
 
-LLM は呼ばないので費用は0。
+LLM は呼ばない。費用0。
 """
 
 from __future__ import annotations
@@ -21,58 +22,43 @@ from forecasting_tools.helpers.metaculus_client import ApiFilter, MetaculusClien
 
 logger = logging.getLogger(__name__)
 
-WANT = 100
-
-
-def _filter(**overrides) -> ApiFilter:
-    base = dict(
-        allowed_statuses=["open"],
-        allowed_types=["binary"],
-        num_forecasters_gte=10,
-        includes_bots_in_aggregates=False,
-        community_prediction_exists=True,
-        group_question_mode="exclude",
-    )
-    base.update(overrides)
-    return ApiFilter(**{k: v for k, v in base.items() if v is not None})
-
-
-CASES = [
-    ("既定に近い形（両方の条件あり）", _filter()),
-    ("bot含む集計の条件を外す", _filter(includes_bots_in_aggregates=None)),
-    ("コミュニティ予測の存在条件を外す", _filter(community_prediction_exists=None)),
-    ("両方外す", _filter(includes_bots_in_aggregates=None,
-                         community_prediction_exists=None)),
-    ("両方外し、予測者数の下限も外す",
-     _filter(includes_bots_in_aggregates=None,
-             community_prediction_exists=None,
-             num_forecasters_gte=None)),
-    ("bot集計を True にしてみる", _filter(includes_bots_in_aggregates=True)),
-]
-
 
 async def main() -> None:
     client = MetaculusClient()
-    print("=" * 74)
-    for label, api_filter in CASES:
-        try:
-            qs = await client.get_questions_matching_filter(
-                api_filter,
-                num_questions=WANT,
-                randomly_sample=True,
-                error_if_question_target_missed=False,
-            )
-            n = len(qs)
-            note = ""
-            if n:
-                q = qs[0]
-                note = f"  例: {str(getattr(q, 'question_text', ''))[:52]}"
-            print(f"  {n:>4} 件  {label}{note}")
-        except Exception as e:
-            print(f"  ERR     {label}  -> {type(e).__name__}: {str(e)[:110]}")
-    print("=" * 74)
-    print("件数が出た行の条件を、benchmark.py 側に採用する。")
-    print("=" * 74)
+    api_filter = ApiFilter(
+        allowed_statuses=["open"],
+        allowed_types=["binary"],
+        num_forecasters_gte=10,
+        group_question_mode="exclude",
+    )
+    questions = await client.get_questions_matching_filter(
+        api_filter,
+        num_questions=30,
+        randomly_sample=True,
+        error_if_question_target_missed=False,
+    )
+    print("=" * 76)
+    print(f"取得 {len(questions)} 問。採点基準の有無を見る。")
+    print("=" * 76)
+    have_cp = 0
+    for q in questions[:30]:
+        cp = getattr(q, "community_prediction_at_access_time", None)
+        reveal = getattr(q, "cp_reveal_time", None)
+        bots = getattr(q, "includes_bots_in_aggregates", None)
+        nf = getattr(q, "num_forecasters", None)
+        if cp is not None:
+            have_cp += 1
+        print(f"  cp={str(cp):<10} reveal={str(reveal)[:19]:<19} "
+              f"bots={str(bots):<5} forecasters={str(nf):<5} "
+              f"{str(getattr(q, 'question_text', ''))[:40]}")
+    print("=" * 76)
+    print(f"コミュニティ予測が入っていた: {have_cp} / {len(questions)} 問")
+    if have_cp == 0:
+        print("→ 値が1件も読めていない。パーサ側か、公開時刻前の問題ばかりか。")
+        print("→ CP を基準にした A/B は、このままでは成立しない。")
+    else:
+        print("→ この件数で A/B が成立する。benchmark.py 側の条件を合わせる。")
+    print("=" * 76)
 
 
 if __name__ == "__main__":
