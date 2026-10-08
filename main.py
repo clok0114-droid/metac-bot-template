@@ -156,6 +156,32 @@ class FallTemplateBot2026(ForecastBot):
             allowed_tries=2,
         )
 
+    @staticmethod
+    def _disconfirmation_block() -> str:
+        """錨 → 反証 → 移動幅の正当化 を、答える前に書かせる。
+
+        明示的な基準率やアンサンブルは既に勝者の定番になっている。定番に
+        なっていないのは「自分の見積もりを自分で潰しに行く工程」で、
+        ニュース1本に引っ張られて錨から離れすぎるのが、ニュース駆動の
+        LLM予測の主な失敗の形だと見ている。そこを構造で抑える。
+        """
+        return (
+            "Before you commit to the answer, you also write:\n"
+            "(x) An anchor: the answer you would give if you ignored every news\n"
+            "    item and assumed the status quo simply persisted until the\n"
+            "    resolution date. State this number explicitly.\n"
+            "(y) The strongest case that your current answer is WRONG. Argue it\n"
+            "    properly instead of listing caveats. Include at least one\n"
+            "    reading of the resolution criteria or fine print that differs\n"
+            "    from the one you assumed, and say what the answer would be\n"
+            "    under that reading.\n"
+            "(z) How far your answer sits from the anchor in (x), and what\n"
+            "    specific evidence justifies moving that far. If the evidence is\n"
+            "    a single recent item, or it changes the narrative around the\n"
+            "    question without changing the mechanism that actually decides\n"
+            "    it, move most of the way back to the anchor."
+        )
+
     ##################################### RESEARCH #####################################
 
     async def run_research(self, question: MetaculusQuestion) -> str:
@@ -252,6 +278,8 @@ class FallTemplateBot2026(ForecastBot):
             (d) A brief description of a scenario that results in a Yes outcome.
 
             You write your rationale remembering that good forecasters put extra weight on the status quo outcome since the world changes slowly most of the time.
+            {self._disconfirmation_block()}
+
             {self._get_conditional_disclaimer_if_necessary(question)}
 
             The last thing you write is your final answer as: "Probability: ZZ%", 0-100
@@ -319,6 +347,8 @@ class FallTemplateBot2026(ForecastBot):
             (a) The time left until the outcome to the question is known.
             (b) The status quo outcome if nothing changed.
             (c) A description of a scenario that results in an unexpected outcome.
+
+            {self._disconfirmation_block()}
 
             {self._get_conditional_disclaimer_if_necessary(question)}
             You write your rationale remembering that (1) good forecasters put extra weight on the status quo outcome since the world changes slowly most of the time, and (2) good forecasters leave some moderate probability on most options to account for unexpected outcomes.
@@ -408,6 +438,8 @@ class FallTemplateBot2026(ForecastBot):
             (d) The expectations of experts and markets.
             (e) A brief description of an unexpected scenario that results in a low outcome.
             (f) A brief description of an unexpected scenario that results in a high outcome.
+
+            {self._disconfirmation_block()}
 
             {self._get_conditional_disclaimer_if_necessary(question)}
             You remind yourself that good forecasters are humble and set wide 90/10 confidence intervals to account for unknown unknowns.
@@ -503,6 +535,8 @@ class FallTemplateBot2026(ForecastBot):
             (d) The expectations of experts and markets.
             (e) A brief description of an unexpected scenario that results in a low outcome.
             (f) A brief description of an unexpected scenario that results in a high outcome.
+
+            {self._disconfirmation_block()}
 
             {self._get_conditional_disclaimer_if_necessary(question)}
             You remind yourself that good forecasters are humble and set wide 90/10 confidence intervals to account for unknown unknowns.
