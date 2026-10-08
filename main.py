@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import itertools
 import logging
 from datetime import datetime, timezone
 from typing import Literal
@@ -126,6 +127,35 @@ class FallTemplateBot2026(ForecastBot):
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
     _structure_output_validation_samples = 2
 
+    # --- モデル系統横断アンサンブル -------------------------------------------
+    # 過去シーズンの公開知見で最も再現性があるのは
+    #   (1) 足場よりも土台のモデルの差が効く
+    #   (2) 複数の系統にまたがる予測の中央値が、単一モデルより強い
+    # の2点。系統を回すことには副作用もあって、OpenRouter の新規アカウント
+    # 制限（モデルごとに毎分20リクエスト）に対し、1問につき1モデル1回に
+    # なるため自分のリクエスト同士で詰まらなくなる。
+    _ENSEMBLE_MODELS = (
+        "openrouter/anthropic/claude-sonnet-5.5",
+        "openrouter/openai/gpt-5.4",
+        "openrouter/google/gemini-3.8-flash",
+        "openrouter/x-ai/grok-4.7",
+        "openrouter/deepseek/deepseek-v4-pro",
+    )
+    _ensemble_cursor = itertools.count()
+
+    def _next_ensemble_llm(self) -> GeneralLlm:
+        """予測1本ごとに別系統のモデルを割り当てる。"""
+        model = self._ENSEMBLE_MODELS[
+            next(self._ensemble_cursor) % len(self._ENSEMBLE_MODELS)
+        ]
+        logger.info(f"Ensemble member: {model}")
+        return GeneralLlm(
+            model=model,
+            temperature=0.3,
+            timeout=120,
+            allowed_tries=2,
+        )
+
     ##################################### RESEARCH #####################################
 
     async def run_research(self, question: MetaculusQuestion) -> str:
@@ -235,7 +265,7 @@ class FallTemplateBot2026(ForecastBot):
         question: BinaryQuestion,
         prompt: str,
     ) -> ReasonedPrediction[float]:
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
+        reasoning = await self._next_ensemble_llm().invoke(prompt)
         logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         parsing_instructions = clean_indents(
             f"""
@@ -317,7 +347,7 @@ class FallTemplateBot2026(ForecastBot):
             {self._create_resolved_question_parsing_message()}
             """
         )
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
+        reasoning = await self._next_ensemble_llm().invoke(prompt)
         logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         predicted_option_list: PredictedOptionList = await structure_output(
             text_to_structure=reasoning,
@@ -400,7 +430,7 @@ class FallTemplateBot2026(ForecastBot):
         question: NumericQuestion,
         prompt: str,
     ) -> ReasonedPrediction[NumericDistribution]:
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
+        reasoning = await self._next_ensemble_llm().invoke(prompt)
         logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         parsing_instructions = clean_indents(
             f"""
@@ -496,7 +526,7 @@ class FallTemplateBot2026(ForecastBot):
         question: DateQuestion,
         prompt: str,
     ) -> ReasonedPrediction[NumericDistribution]:
-        reasoning = await self.get_llm("default", "llm").invoke(prompt)
+        reasoning = await self._next_ensemble_llm().invoke(prompt)
         logger.info(f"Reasoning for URL {question.page_url}: {reasoning}")
         parsing_instructions = clean_indents(
             f"""
@@ -709,7 +739,7 @@ if __name__ == "__main__":
     # uncomment and edit to pin specific models.
     template_bot = FallTemplateBot2026(
         research_reports_per_question=1,
-        predictions_per_research_report=2,
+        predictions_per_research_report=5,
         use_research_summary_to_forecast=False,
         publish_reports_to_metaculus=publish_to_metaculus,
         folder_to_save_reports_to=None,
