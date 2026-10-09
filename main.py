@@ -153,7 +153,10 @@ class FallTemplateBot2026(ForecastBot):
         return GeneralLlm(
             model=model,
             temperature=0.3,
-            timeout=120,
+            # Market Pulse の数値問題で 1 問 4 分近くかかり、120 秒では
+            # 5 本のうち数本がタイムアウトで落ちていた（19 問で軽微例外 9 件）。
+            # 落ちた分は平均から抜けるので、本数が減るほど精度に直接効く。
+            timeout=240,
             allowed_tries=2,
         )
 
