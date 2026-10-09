@@ -1,9 +1,13 @@
 name: Forecast on Market Pulse
 
-# 手動起動のみ。定期実行は、1回通してから入れる。
-# Market Pulse は bot が賞金対象の別プール。出題は19問前後で、1回あたり $3 程度。
+# Market Pulse は bot が賞金対象の別プール。賞金の条件に「問題の生存中に
+# 予測を更新し続けること」が入っているので、1回投げるだけでは条件を半分しか
+# 満たさない。出題19問・1回あたり $3.3 の実測なので、週1回で月 $13 前後。
+# 残高が尽きると途中で止まって順位も読めなくなるため、毎日ではなく週1にする。
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "17 1 * * 1"  # 毎週月曜 01:17 UTC（日本時間 月曜 10:17）
 
 concurrency:
   group: ${{ github.workflow }}
@@ -12,7 +16,7 @@ concurrency:
 jobs:
   forecast_job:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
