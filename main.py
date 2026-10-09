@@ -784,6 +784,36 @@ class FallTemplateBot2026(ForecastBot):
         )
 
 
+def _current_market_pulse(
+    client: MetaculusClient,
+) -> tuple[str, list[MetaculusQuestion]]:
+    """出題がある直近の Market Pulse を探して、その問題ごと返す。
+
+    ライブラリの `CURRENT_MARKET_PULSE_ID` は 26q2 を指したままで四半期に
+    追いついていない。定数を信じる代わりに今の四半期から遡り、出題がある
+    ものを採る。四半期が変わってもここを直さずに済む。
+
+    グループの扱いは `unpack_subquestions` で固定する。Market Pulse の出題は
+    全部がグループの子問題で、既定の `exclude` では 0 問になる。
+    """
+    now = datetime.now(timezone.utc)
+    year, quarter = now.year % 100, (now.month - 1) // 3 + 1
+    tried: list[str] = []
+    for _ in range(4):
+        tournament_id = f"market-pulse-{year:02d}q{quarter}"
+        tried.append(tournament_id)
+        questions = client.get_all_open_questions_from_tournament(
+            tournament_id, group_question_mode="unpack_subquestions"
+        )
+        if questions:
+            return tournament_id, questions
+        quarter -= 1
+        if quarter == 0:
+            year, quarter = year - 1, 4
+    logger.warning(f"No open Market Pulse questions in any of {tried}")
+    return tried[0], []
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
@@ -794,13 +824,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["tournament", "minibench", "metaculus_cup", "test_questions"],
+        choices=[
+            "tournament", "minibench", "market_pulse", "metaculus_cup",
+            "test_questions",
+        ],
         default="tournament",
         help="What to forecast on (default: tournament)",
     )
     args = parser.parse_args()
     run_mode: Literal[
-        "tournament", "minibench", "metaculus_cup", "test_questions"
+        "tournament", "minibench", "market_pulse", "metaculus_cup", "test_questions"
     ] = args.mode
 
     check_environment(strict=True)
@@ -869,6 +902,26 @@ if __name__ == "__main__":
         forecast_reports = asyncio.run(
             template_bot.forecast_on_tournament(
                 client.CURRENT_MINIBENCH_ID, return_exceptions=True
+            )
+        )
+    elif run_mode == "market_pulse":
+        # bot が賞金対象の別プール。条件が2つあり、どちらも既定の挙動と逆。
+        #   ・数値のグループ問題を扱うこと
+        #     → 出題は全部が子問題。`exclude` では 0 問になる。
+        #   ・問題の生存中に予測を更新し続けること
+        #     → 既予測を飛ばす設定を切る。FutureEval では重複投稿を避けるのが
+        #       正しいが、ここでは更新し続けるのが条件。
+        # `forecast_on_tournament` は group_question_mode を受け取らないので、
+        # 自分で取得して `forecast_questions` へ渡す。
+        template_bot.skip_previously_forecasted_questions = False
+        market_pulse_id, market_pulse_questions = _current_market_pulse(client)
+        logger.info(
+            f"Market Pulse {market_pulse_id}: "
+            f"{len(market_pulse_questions)} open questions"
+        )
+        forecast_reports = asyncio.run(
+            template_bot.forecast_questions(
+                market_pulse_questions, return_exceptions=True
             )
         )
     elif run_mode == "metaculus_cup":
