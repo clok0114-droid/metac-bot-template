@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import itertools
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -185,39 +186,75 @@ class FallTemplateBot2026(ForecastBot):
     ##################################### RESEARCH #####################################
 
     async def run_research(self, question: MetaculusQuestion) -> str:
+        """設定されている調査系統すべてを走らせ、出所を付けて束ねる。
+
+        Q2 の上位は揃って検索を1本に絞っていない。優勝 bot は Google (Serper)・
+        Perplexity・AskNews を併用し、2位は o3 と AskNews の組み合わせだった。
+        単独の提供元は、その提供元が拾い落とした話を補えない。
+
+        鍵が入っていない提供元は黙って飛ばす。これで、鍵が後から増えても
+        コードを変えずに系統が増える。
+        """
         async with self._concurrency_limiter:
-            research = ""
+            sections: list[tuple[str, str]] = []
+
             researcher = self.get_llm("researcher")
+            primary_name = GeneralLlm.to_model_name(researcher) or "researcher"
+            primary = await self._invoke_researcher(researcher, question)
+            if primary:
+                sections.append((primary_name, primary))
 
-            prompt = self._get_research_prompt(question, researcher)
-
-            if isinstance(researcher, GeneralLlm):
-                research = await researcher.invoke(prompt)
-            elif (
-                researcher == "asknews/news-summaries"
-                or researcher == "asknews/deep-research/low-depth"
-                or researcher == "asknews/deep-research/medium-depth"
-                or researcher == "asknews/deep-research/high-depth"
+            if (
+                os.environ.get("ASKNEWS_CLIENT_ID")
+                and os.environ.get("ASKNEWS_SECRET")
+                and not primary_name.startswith("asknews/")
             ):
-                research = await AskNewsSearcher().call_preconfigured_version(
-                    researcher, prompt
+                try:
+                    extra = await AskNewsSearcher().call_preconfigured_version(
+                        "asknews/news-summaries", question.question_text
+                    )
+                    if extra:
+                        sections.append(("asknews/news-summaries", extra))
+                except Exception as exc:
+                    logger.warning(f"AskNews research skipped: {exc}")
+
+            if len(sections) > 1:
+                research = "\n\n".join(
+                    f"### Source: {name}\n{body}" for name, body in sections
                 )
-            elif researcher.startswith("smart-searcher"):
-                model_name = researcher.removeprefix("smart-searcher/")
-                searcher = SmartSearcher(
-                    model=model_name,
-                    temperature=0,
-                    num_searches_to_run=2,
-                    num_sites_per_search=10,
-                    use_advanced_filters=False,
-                )
-                research = await searcher.invoke(prompt)
-            elif not researcher or researcher == "None" or researcher == "no_research":
-                research = ""
             else:
-                research = await self.get_llm("researcher", "llm").invoke(prompt)
+                research = sections[0][1] if sections else ""
             logger.info(f"Found Research for URL {question.page_url}:\n{research}")
             return research
+
+    async def _invoke_researcher(
+        self, researcher: str | GeneralLlm, question: MetaculusQuestion
+    ) -> str:
+        """`researcher` の指定1つ分を走らせる。元の run_research の分岐そのまま。"""
+        prompt = self._get_research_prompt(question, researcher)
+
+        if isinstance(researcher, GeneralLlm):
+            return await researcher.invoke(prompt)
+        if (
+            researcher == "asknews/news-summaries"
+            or researcher == "asknews/deep-research/low-depth"
+            or researcher == "asknews/deep-research/medium-depth"
+            or researcher == "asknews/deep-research/high-depth"
+        ):
+            return await AskNewsSearcher().call_preconfigured_version(researcher, prompt)
+        if researcher.startswith("smart-searcher"):
+            model_name = researcher.removeprefix("smart-searcher/")
+            searcher = SmartSearcher(
+                model=model_name,
+                temperature=0,
+                num_searches_to_run=2,
+                num_sites_per_search=10,
+                use_advanced_filters=False,
+            )
+            return await searcher.invoke(prompt)
+        if not researcher or researcher == "None" or researcher == "no_research":
+            return ""
+        return await self.get_llm("researcher", "llm").invoke(prompt)
 
     @staticmethod
     def _get_research_prompt(
